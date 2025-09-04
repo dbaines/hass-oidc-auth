@@ -61,24 +61,44 @@ OIDC_PROVIDERS = {
         "discovery_url": "",
         "default_admin_group": DEFAULT_ADMIN_GROUP,
         "supports_groups": True,
+        "claims": {
+            "display_name": "name",
+            "username": "preferred_username",
+            "groups": "groups",
+        },
     },
     "authelia": {
         "name": "Authelia",
         "discovery_url": "",
         "default_admin_group": DEFAULT_ADMIN_GROUP,
         "supports_groups": True,
+        "claims": {
+            "display_name": "name",
+            "username": "preferred_username",
+            "groups": "groups",
+        },
     },
     "pocketid": {
         "name": "Pocket ID",
         "discovery_url": "",
         "default_admin_group": DEFAULT_ADMIN_GROUP,
         "supports_groups": True,
+        "claims": {
+            "display_name": "name",
+            "username": "preferred_username",
+            "groups": "groups",
+        },
     },
     "kanidm": {
         "name": "Kanidm",
         "discovery_url": "",
         "default_admin_group": DEFAULT_ADMIN_GROUP,
         "supports_groups": True,
+        "claims": {
+            "display_name": "name",
+            "username": "preferred_username",
+            "groups": "groups",
+        },
     },
     "microsoft": {
         "name": "Microsoft Entra ID",
@@ -88,12 +108,11 @@ OIDC_PROVIDERS = {
         ),
         "default_admin_group": DEFAULT_ADMIN_GROUP,
         "supports_groups": True,
-    },
-    "generic": {
-        "name": "Generic OpenID Connect",
-        "discovery_url": "",
-        "default_admin_group": DEFAULT_ADMIN_GROUP,
-        "supports_groups": True,
+        "claims": {
+            "display_name": "name",
+            "username": "preferred_username",
+            "groups": "groups",
+        },
     },
 }
 
@@ -179,7 +198,7 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._flow_state.discovery_url = provider_config["discovery_url"]
                 return await self.async_step_client_config()
 
-            # For generic providers, need discovery URL input
+            # For providers without predefined discovery URL, need discovery URL input
             return await self.async_step_discovery_url()
 
         data_schema = vol.Schema(
@@ -200,7 +219,7 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_discovery_url(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle discovery URL input for generic providers."""
+        """Handle discovery URL input for providers requiring URL configuration."""
         errors = {}
 
         if user_input is not None:
@@ -401,8 +420,8 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "fix_client": "Fix Client Settings",
         }
 
-        # Add discovery URL fix option for generic providers
-        if self._flow_state.provider in ["authelia", "authentik", "generic"]:
+        # Add discovery URL fix option for providers without predefined URLs
+        if self._flow_state.provider in ["authelia", "authentik"]:
             action_options["fix_discovery"] = "Fix Discovery URL"
 
         # Add provider change option
@@ -724,7 +743,7 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "provider_name": OIDC_PROVIDERS.get(
-                    current_data.get("provider", "generic"), {}
+                    current_data.get("provider", "authentik"), {}
                 ).get("name", "Unknown Provider"),
                 "discovery_url": current_data.get("discovery_url", ""),
             },
@@ -782,7 +801,7 @@ class OIDCOptionsFlowHandler(config_entries.OptionsFlow):
         current_roles = current_config.get("roles", {})
 
         # Determine if this provider supports groups
-        provider = current_config.get("provider", "generic")
+        provider = current_config.get("provider", "authentik")
         provider_supports_groups = OIDC_PROVIDERS.get(provider, {}).get(
             "supports_groups", True
         )
