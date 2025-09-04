@@ -69,8 +69,6 @@
     "error": {
       "cannot_connect": "Failed to connect to the OIDC provider. Please check your network connection and discovery URL.",
       "discovery_invalid": "The discovery document could not be retrieved or is invalid. Please verify the discovery URL is correct.",
-      "discovery_url_yaml_conflict": "This discovery URL is already configured in your YAML configuration. Please use a different URL or remove the YAML configuration first.",
-      "discovery_url_ui_conflict": "This discovery URL is already configured in another OIDC integration. Please use a different URL or remove the existing configuration first.",
       "jwks_invalid": "Failed to retrieve or validate the JWKS (JSON Web Key Set). Please check your provider configuration.",
       "client_secret_required": "Client secret is required when using confidential client mode.",
       "invalid_url_format": "The discovery URL must be a valid HTTP or HTTPS URL.",
@@ -88,7 +86,8 @@
     "abort": {
       "already_configured": "This OIDC provider is already configured.",
       "cannot_connect": "Unable to connect to the OIDC provider.",
-      "invalid_discovery": "Invalid discovery document received from the provider."
+      "invalid_discovery": "Invalid discovery document received from the provider.",
+      "single_instance_allowed": "OIDC Authentication only supports a single configuration. You already have OIDC configured (either through YAML or the UI). To modify your existing configuration, go to Settings > Devices & Services > OIDC Authentication and click 'Configure'. To replace your configuration, first remove the existing one."
     }
   },
   "options": {

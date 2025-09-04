@@ -16,7 +16,7 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import network
 
-from .config import DOMAIN, DISCOVERY_URL
+from .config import DOMAIN
 from .oidc_client import OIDCClient, OIDCDiscoveryInvalid, OIDCJWKSInvalid
 
 _LOGGER = logging.getLogger(__name__)
@@ -156,39 +156,18 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._oidc_client = None
         self._oauth_state = None
 
-    async def _check_discovery_url_exists(self, discovery_url: str) -> tuple[bool, str]:
-        """Check if discovery URL already exists in YAML or config entries.
-        Returns (exists, conflict_type)"""
-
-        # Normalize URL for comparison (remove trailing slashes, convert to lowercase)
-        normalized_url = discovery_url.rstrip("/").lower()
-
-        # Check YAML config - look in the stored location
-        if DOMAIN in self.hass.data and "yaml_config" in self.hass.data[DOMAIN]:
-            yaml_config = self.hass.data[DOMAIN]["yaml_config"]
-            yaml_discovery = yaml_config.get(DISCOVERY_URL, "").rstrip("/").lower()
-            if yaml_discovery == normalized_url:
-                return True, "yaml"
-
-        # Check existing config entries
-        existing_entries = self.hass.config_entries.async_entries(DOMAIN)
-        for entry in existing_entries:
-            # Allow reconfiguration of the same entry
-            if self.context.get(
-                "source"
-            ) == "reconfigure" and entry.entry_id == self.context.get("entry_id"):
-                continue
-
-            entry_discovery = entry.data.get("discovery_url", "").rstrip("/").lower()
-            if entry_discovery == normalized_url:
-                return True, "config_entry"
-
-        return False, ""
-
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the initial step - provider selection."""
+        # Check if OIDC is already configured (only one instance allowed)
+        if self._async_current_entries():
+            return self.async_abort(reason="single_instance_allowed")
+
+        # Check if YAML configuration exists
+        if self.hass.data.get(DOMAIN, {}).get("yaml_config"):
+            return self.async_abort(reason="single_instance_allowed")
+
         errors = {}
 
         if user_input is not None:
@@ -231,18 +210,8 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not _validate_discovery_url(discovery_url):
                 errors["discovery_url"] = "invalid_url_format"
             else:
-                # Check if this discovery URL is already in use
-                url_exists, conflict_type = await self._check_discovery_url_exists(
-                    discovery_url
-                )
-                if url_exists:
-                    if conflict_type == "yaml":
-                        errors["base"] = "discovery_url_yaml_conflict"
-                    else:
-                        errors["base"] = "discovery_url_ui_conflict"
-                else:
-                    self._flow_state.discovery_url = discovery_url
-                    return await self.async_step_client_config()
+                self._flow_state.discovery_url = discovery_url
+                return await self.async_step_client_config()
 
         provider_name = OIDC_PROVIDERS[self._flow_state.provider]["name"]
 
@@ -596,7 +565,7 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_finalize(self) -> FlowResult:
         """Finalize the configuration and create the config entry."""
-        await self.async_set_unique_id(f"{DOMAIN}_{self._flow_state.discovery_url}")
+        await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
 
         provider_config = OIDC_PROVIDERS[self._flow_state.provider]
