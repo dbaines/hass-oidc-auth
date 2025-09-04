@@ -3,6 +3,7 @@
 import logging
 from typing import OrderedDict
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 # Import and re-export config schema explictly
@@ -40,9 +41,75 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config):
-    """Add the OIDC Auth Provider to the providers in Home Assistant"""
+    """Add the OIDC Auth Provider to the providers in Home Assistant (YAML config)."""
+    if DOMAIN not in config:
+        return True
+    
     my_config = config[DOMAIN]
+    
+    # Store YAML config for later access by config flow
+    if DOMAIN not in hass.data:
+        hass.data[DOMAIN] = {}
+    hass.data[DOMAIN]["yaml_config"] = my_config
+    
+    await _setup_oidc_provider(hass, my_config, config[DOMAIN].get(DISPLAY_NAME, DEFAULT_TITLE))
+    return True
 
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
+    """Set up OIDC Authentication from a config entry."""
+    # Convert config entry data to the format expected by the existing setup
+    config_data = entry.data.copy()
+    
+    # Convert config entry format to internal format
+    my_config = _convert_config_entry_to_internal_format(config_data)
+    
+    # Get display name from config entry
+    display_name = config_data.get("display_name", DEFAULT_TITLE)
+    
+    await _setup_oidc_provider(hass, my_config, display_name)
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+    """Unload a config entry."""
+    # OIDC auth providers cannot be easily unloaded as they are integrated
+    # into Home Assistant's auth system. A restart is required.
+    return False
+
+
+def _convert_config_entry_to_internal_format(config_data: dict) -> dict:
+    """Convert config entry data to internal configuration format."""
+    my_config = {}
+    
+    # Required fields
+    my_config[CLIENT_ID] = config_data["client_id"]
+    my_config[DISCOVERY_URL] = config_data["discovery_url"]
+    
+    # Optional fields
+    if "client_secret" in config_data:
+        my_config[CLIENT_SECRET] = config_data["client_secret"]
+    
+    if "display_name" in config_data:
+        my_config[DISPLAY_NAME] = config_data["display_name"]
+    
+    # Features configuration
+    if "features" in config_data:
+        my_config[FEATURES] = config_data["features"]
+    
+    # Claims configuration
+    if "claims" in config_data:
+        my_config[CLAIMS] = config_data["claims"]
+    
+    # Roles configuration
+    if "roles" in config_data:
+        my_config[ROLES] = config_data["roles"]
+    
+    return my_config
+
+
+async def _setup_oidc_provider(hass: HomeAssistant, my_config: dict, display_name: str):
+    """Set up the OIDC provider with the given configuration."""
     providers = OrderedDict()
 
     # Use private APIs until there is a real auth platform
@@ -77,7 +144,7 @@ async def async_setup(hass: HomeAssistant, config):
         scope += " ".join(additional_scopes)
 
     # Create the OIDC client
-    oidc_client = oidc_client = OIDCClient(
+    oidc_client = OIDCClient(
         hass=hass,
         discovery_url=my_config.get(DISCOVERY_URL),
         client_id=my_config.get(CLIENT_ID),
@@ -91,7 +158,7 @@ async def async_setup(hass: HomeAssistant, config):
     )
 
     # Register the views
-    name = config[DOMAIN].get(DISPLAY_NAME, DEFAULT_TITLE)
+    name = display_name
     force_https = features_config.get(FEATURES_FORCE_HTTPS, False)
 
     hass.http.register_view(OIDCWelcomeView(name))
@@ -100,5 +167,3 @@ async def async_setup(hass: HomeAssistant, config):
     hass.http.register_view(OIDCFinishView())
 
     _LOGGER.info("Registered OIDC views")
-
-    return True
