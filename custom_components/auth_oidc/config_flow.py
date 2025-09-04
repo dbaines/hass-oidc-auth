@@ -607,6 +607,129 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_create_entry(title=title, data=config_data)
 
+    async def _validate_reconfigure_input(
+        self, entry, user_input: dict[str, Any]
+    ) -> tuple[dict[str, str], dict[str, Any] | None]:
+        """Validate reconfigure input and return errors and data updates."""
+        errors = {}
+
+        # Validate client ID
+        client_id = user_input[CONF_CLIENT_ID].strip()
+        if not _validate_client_id(client_id):
+            errors["client_id"] = "invalid_client_id"
+            return errors, None
+
+        is_confidential = user_input.get(CONF_IS_CONFIDENTIAL, False)
+        client_secret = None
+
+        if is_confidential:
+            client_secret = user_input.get(CONF_CLIENT_SECRET, "").strip()
+            # If secret is empty, keep the existing one (if any)
+            if not client_secret:
+                client_secret = entry.data.get("client_secret")
+            if not client_secret:
+                errors["client_secret"] = "client_secret_required"
+                return errors, None
+
+        # Test the new configuration
+        test_client = OIDCClient(
+            hass=self.hass,
+            discovery_url=entry.data["discovery_url"],
+            client_id=client_id,
+            scope="openid profile",
+            client_secret=client_secret if is_confidential else None,
+            features={},
+            claims={},
+            roles={},
+            network={},
+        )
+
+        # Validate the new credentials
+        discovery_doc = await test_client.validate_discovery()
+        if "jwks_uri" in discovery_doc:
+            await test_client.validate_jwks(discovery_doc["jwks_uri"])
+
+        # Build updated data
+        data_updates = {"client_id": client_id}
+
+        if is_confidential and client_secret:
+            data_updates["client_secret"] = client_secret
+        elif "client_secret" in entry.data and not is_confidential:
+            # Remove client secret if switching from confidential to public
+            data_updates = {**entry.data, **data_updates}
+            data_updates.pop("client_secret", None)
+
+        return errors, data_updates
+
+    def _build_reconfigure_schema(
+        self, current_data: dict[str, Any], user_input: dict[str, Any] | None
+    ) -> vol.Schema:
+        """Build the reconfigure form schema."""
+        current_is_confidential = bool(current_data.get("client_secret"))
+
+        schema_dict = {
+            vol.Required(
+                CONF_CLIENT_ID, default=current_data.get("client_id", vol.UNDEFINED)
+            ): str,
+            vol.Optional(CONF_IS_CONFIDENTIAL, default=current_is_confidential): bool,
+        }
+
+        # Add client secret field if confidential client is selected
+        if user_input is None or user_input.get(
+            CONF_IS_CONFIDENTIAL, current_is_confidential
+        ):
+            schema_dict[vol.Optional(CONF_CLIENT_SECRET)] = str
+
+        return vol.Schema(schema_dict)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle reconfiguration of OIDC client credentials."""
+        errors = {}
+        entry = self._get_reconfigure_entry()
+
+        if user_input is not None:
+            try:
+                errors, data_updates = await self._validate_reconfigure_input(
+                    entry, user_input
+                )
+
+                if not errors:
+                    # Update the config entry
+                    await self.async_set_unique_id(entry.unique_id)
+                    self._abort_if_unique_id_mismatch()
+
+                    return self.async_update_reload_and_abort(
+                        entry, data_updates=data_updates
+                    )
+
+            except OIDCDiscoveryInvalid:
+                errors["base"] = "discovery_invalid"
+            except OIDCJWKSInvalid:
+                errors["base"] = "jwks_invalid"
+            except aiohttp.ClientError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected error during reconfiguration")
+                errors["base"] = "unknown"
+
+        # Show form
+        current_data = entry.data
+        data_schema = self._build_reconfigure_schema(current_data, user_input)
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "provider_name": OIDC_PROVIDERS.get(
+                    current_data.get("provider", "generic"), {}
+                ).get("name", "Unknown Provider"),
+                "discovery_url": current_data.get("discovery_url", ""),
+            },
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):

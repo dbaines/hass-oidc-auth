@@ -64,6 +64,15 @@
         "title": "Setup Complete",
         "description": "Your OIDC authentication is now configured and ready to use.\n\n**Next Steps:**\n1. Save this configuration\n2. Restart Home Assistant if prompted\n3. The OIDC login option will appear on your login screen\n\n**Advanced Configuration:**\nAdvanced options like custom networking settings, specific claim configurations, or custom scopes are only available through YAML configuration. See the documentation for details.",
         "data": {}
+      },
+      "reconfigure": {
+        "title": "Reconfigure OIDC Authentication",
+        "description": "Update your OIDC client credentials for {provider_name}.\n\n**Discovery URL:** {discovery_url}\n\n**What you can change:**\n- **Client ID**: Update your application's client identifier\n- **Client Type**: Switch between Public and Confidential client types\n- **Client Secret**: Update or add a client secret (for confidential clients)\n\n**Note:** Changes will be validated against your OIDC provider before being saved. Your existing settings will be preserved if validation fails.\n\n**Security:** For confidential clients, leave the client secret field empty to keep your existing secret unchanged.",
+        "data": {
+          "client_id": "Client ID",
+          "is_confidential": "Use Confidential Client (requires client secret)",
+          "client_secret": "Client Secret (leave empty to keep current)"
+        }
       }
     },
     "error": {
