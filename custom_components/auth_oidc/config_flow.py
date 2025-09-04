@@ -1,20 +1,20 @@
 """Config flow for OIDC Authentication integration."""
+
 from __future__ import annotations
 
 import logging
-from typing import Any
-import aiohttp
-import voluptuous as vol
 import secrets
+from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlparse
 
+import aiohttp
+import voluptuous as vol
+
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers import network
-from homeassistant.components import http
 
 from .config import DOMAIN, DISCOVERY_URL
 from .oidc_client import OIDCClient, OIDCDiscoveryInvalid, OIDCJWKSInvalid
@@ -35,79 +35,94 @@ CONF_ENABLE_USER_LINKING = "enable_user_linking"
 # Default values
 DEFAULT_ADMIN_GROUP = "admins"
 
+
 def _validate_discovery_url(url: str) -> bool:
     """Validate that a URL is properly formatted for OIDC discovery."""
     try:
         parsed = urlparse(url.strip())
         return bool(parsed.scheme in ("http", "https") and parsed.netloc)
-    except Exception:
+    except (ValueError, TypeError):
         return False
+
 
 def _sanitize_client_secret(secret: str) -> str:
     """Sanitize client secret input."""
     return secret.strip() if secret else ""
 
+
 def _validate_client_id(client_id: str) -> bool:
     """Validate client ID format."""
     return bool(client_id and client_id.strip() and len(client_id.strip()) > 0)
 
+
 OIDC_PROVIDERS = {
-    "google": {
-        "name": "Google",
-        "discovery_url": "https://accounts.google.com/.well-known/openid_configuration",
-        "claims": {
-            "display_name": "name",
-            "username": "email",
-            "groups": "groups"
-        },
+    "authentik": {
+        "name": "Authentik",
+        "discovery_url": "",
         "default_admin_group": DEFAULT_ADMIN_GROUP,
-        "supports_groups": False
-    },
-    "microsoft": {
-        "name": "Microsoft Azure AD / Entra ID",
-        "discovery_url": "https://login.microsoftonline.com/common/v2.0/.well-known/openid_configuration",
-        "claims": {
-            "display_name": "name",
-            "username": "preferred_username",
-            "groups": "groups"
-        },
-        "default_admin_group": DEFAULT_ADMIN_GROUP,
-        "supports_groups": True
+        "supports_groups": True,
     },
     "authelia": {
         "name": "Authelia",
         "discovery_url": "",
-        "claims": {
-            "display_name": "name",
-            "username": "preferred_username",
-            "groups": "groups"
-        },
         "default_admin_group": DEFAULT_ADMIN_GROUP,
-        "supports_groups": True
+        "supports_groups": True,
     },
-    "authentik": {
-        "name": "Authentik",
+    "pocketid": {
+        "name": "Pocket ID",
         "discovery_url": "",
-        "claims": {
-            "display_name": "name",
-            "username": "preferred_username",
-            "groups": "groups"
-        },
         "default_admin_group": DEFAULT_ADMIN_GROUP,
-        "supports_groups": True
+        "supports_groups": True,
+    },
+    "kanidm": {
+        "name": "Kanidm",
+        "discovery_url": "",
+        "default_admin_group": DEFAULT_ADMIN_GROUP,
+        "supports_groups": True,
+    },
+    "microsoft": {
+        "name": "Microsoft Entra ID",
+        "discovery_url": (
+            "https://login.microsoftonline.com/common/v2.0/"
+            ".well-known/openid_configuration"
+        ),
+        "default_admin_group": DEFAULT_ADMIN_GROUP,
+        "supports_groups": True,
     },
     "generic": {
         "name": "Generic OpenID Connect",
         "discovery_url": "",
-        "claims": {
-            "display_name": "name",
-            "username": "preferred_username",
-            "groups": "groups"
-        },
         "default_admin_group": DEFAULT_ADMIN_GROUP,
-        "supports_groups": True
-    }
+        "supports_groups": True,
+    },
 }
+
+
+@dataclass
+class FlowState:
+    """State tracking for the configuration flow."""
+
+    provider: str | None = None
+    discovery_url: str | None = None
+
+
+@dataclass
+class ClientConfig:
+    """Client configuration settings."""
+
+    client_id: str | None = None
+    client_secret: str | None = None
+    is_confidential: bool = False
+
+
+@dataclass
+class FeatureConfig:
+    """Feature configuration settings."""
+
+    enable_groups: bool = False
+    admin_group: str = DEFAULT_ADMIN_GROUP
+    user_group: str | None = None
+    enable_user_linking: bool = False
 
 
 class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -115,45 +130,59 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def is_matching(self, other_flow):
+        """Check if this flow is the same as another flow."""
+        self_state = getattr(self, "_flow_state", None)
+        other_state = getattr(other_flow, "_flow_state", None)
+
+        if not self_state or not other_state:
+            return False
+
+        self_discovery_url = self_state.discovery_url
+        other_discovery_url = other_state.discovery_url
+
+        return (
+            self_discovery_url
+            and other_discovery_url
+            and self_discovery_url.rstrip("/").lower()
+            == other_discovery_url.rstrip("/").lower()
+        )
+
     def __init__(self):
         """Initialize the config flow."""
-        self._provider = None
-        self._client_id = None
-        self._client_secret = None
-        self._discovery_url = None
-        self._is_confidential = False
-        self._enable_groups = False
-        self._admin_group = DEFAULT_ADMIN_GROUP
-        self._user_group = None
-        self._enable_user_linking = False
+        self._flow_state = FlowState()
+        self._client_config = ClientConfig()
+        self._feature_config = FeatureConfig()
         self._oidc_client = None
         self._oauth_state = None
 
     async def _check_discovery_url_exists(self, discovery_url: str) -> tuple[bool, str]:
         """Check if discovery URL already exists in YAML or config entries.
         Returns (exists, conflict_type)"""
-        
+
         # Normalize URL for comparison (remove trailing slashes, convert to lowercase)
-        normalized_url = discovery_url.rstrip('/').lower()
-        
+        normalized_url = discovery_url.rstrip("/").lower()
+
         # Check YAML config - look in the stored location
         if DOMAIN in self.hass.data and "yaml_config" in self.hass.data[DOMAIN]:
             yaml_config = self.hass.data[DOMAIN]["yaml_config"]
-            yaml_discovery = yaml_config.get(DISCOVERY_URL, "").rstrip('/').lower()
+            yaml_discovery = yaml_config.get(DISCOVERY_URL, "").rstrip("/").lower()
             if yaml_discovery == normalized_url:
                 return True, "yaml"
-        
+
         # Check existing config entries
         existing_entries = self.hass.config_entries.async_entries(DOMAIN)
         for entry in existing_entries:
             # Allow reconfiguration of the same entry
-            if self.context.get("source") == "reconfigure" and entry.entry_id == self.context.get("entry_id"):
+            if self.context.get(
+                "source"
+            ) == "reconfigure" and entry.entry_id == self.context.get("entry_id"):
                 continue
-            
-            entry_discovery = entry.data.get("discovery_url", "").rstrip('/').lower()
+
+            entry_discovery = entry.data.get("discovery_url", "").rstrip("/").lower()
             if entry_discovery == normalized_url:
                 return True, "config_entry"
-        
+
         return False, ""
 
     async def async_step_user(
@@ -163,28 +192,30 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            self._provider = user_input[CONF_PROVIDER]
-            provider_config = OIDC_PROVIDERS[self._provider]
-            
+            self._flow_state.provider = user_input[CONF_PROVIDER]
+            provider_config = OIDC_PROVIDERS[self._flow_state.provider]
+
             # Set discovery URL if it's predefined
             if provider_config["discovery_url"]:
-                self._discovery_url = provider_config["discovery_url"]
+                self._flow_state.discovery_url = provider_config["discovery_url"]
                 return await self.async_step_client_config()
-            else:
-                # For generic providers, need discovery URL input
-                return await self.async_step_discovery_url()
 
-        data_schema = vol.Schema({
-            vol.Required(CONF_PROVIDER): vol.In({
-                key: provider["name"] for key, provider in OIDC_PROVIDERS.items()
-            })
-        })
+            # For generic providers, need discovery URL input
+            return await self.async_step_discovery_url()
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_PROVIDER): vol.In(
+                    {key: provider["name"] for key, provider in OIDC_PROVIDERS.items()}
+                )
+            }
+        )
 
         return self.async_show_form(
             step_id="user",
             data_schema=data_schema,
             errors=errors,
-            description_placeholders={}
+            description_placeholders={},
         )
 
     async def async_step_discovery_url(
@@ -194,37 +225,43 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            discovery_url = user_input[CONF_DISCOVERY_URL].rstrip('/')
-            
+            discovery_url = user_input[CONF_DISCOVERY_URL].rstrip("/")
+
             # Validate discovery URL format
             if not _validate_discovery_url(discovery_url):
                 errors["discovery_url"] = "invalid_url_format"
             else:
                 # Check if this discovery URL is already in use
-                url_exists, conflict_type = await self._check_discovery_url_exists(discovery_url)
+                url_exists, conflict_type = await self._check_discovery_url_exists(
+                    discovery_url
+                )
                 if url_exists:
                     if conflict_type == "yaml":
                         errors["base"] = "discovery_url_yaml_conflict"
                     else:
                         errors["base"] = "discovery_url_ui_conflict"
                 else:
-                    self._discovery_url = discovery_url
+                    self._flow_state.discovery_url = discovery_url
                     return await self.async_step_client_config()
 
-        provider_name = OIDC_PROVIDERS[self._provider]["name"]
-        
+        provider_name = OIDC_PROVIDERS[self._flow_state.provider]["name"]
+
         # Pre-populate with existing discovery URL if available
-        default_url = self._discovery_url if self._discovery_url else vol.UNDEFINED
-        
-        data_schema = vol.Schema({
-            vol.Required(CONF_DISCOVERY_URL, default=default_url): str
-        })
+        default_url = (
+            self._flow_state.discovery_url
+            if self._flow_state.discovery_url
+            else vol.UNDEFINED
+        )
+
+        data_schema = vol.Schema(
+            {vol.Required(CONF_DISCOVERY_URL, default=default_url): str}
+        )
 
         return self.async_show_form(
             step_id="discovery_url",
             data_schema=data_schema,
             errors=errors,
-            description_placeholders={"provider_name": provider_name}
+            description_placeholders={"provider_name": provider_name},
         )
 
     async def async_step_client_config(
@@ -235,31 +272,41 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             client_id = user_input[CONF_CLIENT_ID]
-            
+
             # Validate client ID
             if not _validate_client_id(client_id):
                 errors["client_id"] = "invalid_client_id"
-            else:
-                self._client_id = client_id.strip()
-                self._is_confidential = user_input.get(CONF_IS_CONFIDENTIAL, False)
-                
-                if self._is_confidential:
+            if not errors:
+                self._client_config.client_id = client_id.strip()
+                self._client_config.is_confidential = user_input.get(
+                    CONF_IS_CONFIDENTIAL, False
+                )
+
+                if self._client_config.is_confidential:
                     # If confidential client, go to client secret step
                     return await self.async_step_client_secret()
-                else:
-                    # If public client, skip to validation
-                    return await self.async_step_validate_connection()
 
-        provider_name = OIDC_PROVIDERS[self._provider]["name"]
-        
+                # If public client, skip to validation
+                return await self.async_step_validate_connection()
+
+        provider_name = OIDC_PROVIDERS[self._flow_state.provider]["name"]
+
         # Pre-populate with existing values if available
-        default_client_id = self._client_id if self._client_id else vol.UNDEFINED
-        default_is_confidential = self._is_confidential
-        
-        data_schema = vol.Schema({
-            vol.Required(CONF_CLIENT_ID, default=default_client_id): str,
-            vol.Optional(CONF_IS_CONFIDENTIAL, default=default_is_confidential): bool
-        })
+        default_client_id = (
+            self._client_config.client_id
+            if self._client_config.client_id
+            else vol.UNDEFINED
+        )
+        default_is_confidential = self._client_config.is_confidential
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_CLIENT_ID, default=default_client_id): str,
+                vol.Optional(
+                    CONF_IS_CONFIDENTIAL, default=default_is_confidential
+                ): bool,
+            }
+        )
 
         return self.async_show_form(
             step_id="client_config",
@@ -267,8 +314,8 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "provider_name": provider_name,
-                "discovery_url": self._discovery_url
-            }
+                "discovery_url": self._flow_state.discovery_url,
+            },
         )
 
     async def async_step_client_secret(
@@ -279,23 +326,27 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             client_secret = user_input.get(CONF_CLIENT_SECRET, "")
-            
+
             # Sanitize and validate client secret
             client_secret = _sanitize_client_secret(client_secret)
             if not client_secret:
                 errors["client_secret"] = "client_secret_required"
             else:
-                self._client_secret = client_secret
+                self._client_config.client_secret = client_secret
                 return await self.async_step_validate_connection()
 
-        provider_name = OIDC_PROVIDERS[self._provider]["name"]
-        
+        provider_name = OIDC_PROVIDERS[self._flow_state.provider]["name"]
+
         # Pre-populate with existing client secret if available
-        default_client_secret = self._client_secret if self._client_secret else vol.UNDEFINED
-        
-        data_schema = vol.Schema({
-            vol.Required(CONF_CLIENT_SECRET, default=default_client_secret): str
-        })
+        default_client_secret = (
+            self._client_config.client_secret
+            if self._client_config.client_secret
+            else vol.UNDEFINED
+        )
+
+        data_schema = vol.Schema(
+            {vol.Required(CONF_CLIENT_SECRET, default=default_client_secret): str}
+        )
 
         return self.async_show_form(
             step_id="client_secret",
@@ -303,9 +354,9 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "provider_name": provider_name,
-                "client_id": self._client_id,
-                "discovery_url": self._discovery_url
-            }
+                "client_id": self._client_config.client_id,
+                "discovery_url": self._flow_state.discovery_url,
+            },
         )
 
     async def async_step_validate_connection(
@@ -313,11 +364,11 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Validate the OIDC configuration by testing discovery and JWKS."""
         errors = {}
-        
+
         # Handle user input from validation form
         if user_input is not None:
             action = user_input.get("action")
-            
+
             if action == "retry":
                 # User wants to retry validation - continue with validation logic below
                 pass
@@ -330,39 +381,41 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             elif action == "change_provider":
                 # User wants to change provider - return to provider selection
                 return await self.async_step_user()
-        
+
         # Perform validation (either initial attempt or retry)
         try:
             # Create a test OIDC client to validate configuration
             test_client = OIDCClient(
                 hass=self.hass,
-                discovery_url=self._discovery_url,
-                client_id=self._client_id,
+                discovery_url=self._flow_state.discovery_url,
+                client_id=self._client_config.client_id,
                 scope="openid profile",
-                client_secret=self._client_secret if self._is_confidential else None,
+                client_secret=self._client_config.client_secret
+                if self._client_config.is_confidential
+                else None,
                 features={},
                 claims={},
                 roles={},
-                network={}
+                network={},
             )
 
             # Test discovery document fetch
-            discovery_doc = await test_client._fetch_discovery_document()
-            
+            discovery_doc = await test_client.validate_discovery()
+
             # Test JWKS retrieval
             if "jwks_uri" in discovery_doc:
-                await test_client._get_jwks(discovery_doc["jwks_uri"])
-            
+                await test_client.validate_jwks(discovery_doc["jwks_uri"])
+
             # Store the client for later use
             self._oidc_client = test_client
-            
+
             # Check if provider supports groups
-            provider_config = OIDC_PROVIDERS[self._provider]
+            provider_config = OIDC_PROVIDERS[self._flow_state.provider]
             if provider_config["supports_groups"]:
                 return await self.async_step_groups_config()
-            else:
-                return await self.async_step_user_linking()
-                
+
+            return await self.async_step_user_linking()
+
         except OIDCDiscoveryInvalid:
             errors["base"] = "discovery_invalid"
         except OIDCJWKSInvalid:
@@ -376,29 +429,27 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Show validation form with error and action options
         action_options = {
             "retry": "Retry Validation",
-            "fix_client": "Fix Client Settings"
+            "fix_client": "Fix Client Settings",
         }
-        
+
         # Add discovery URL fix option for generic providers
-        if self._provider in ["authelia", "authentik", "generic"]:
+        if self._flow_state.provider in ["authelia", "authentik", "generic"]:
             action_options["fix_discovery"] = "Fix Discovery URL"
-        
+
         # Add provider change option
         action_options["change_provider"] = "Change Provider"
 
-        data_schema = vol.Schema({
-            vol.Required("action"): vol.In(action_options)
-        })
+        data_schema = vol.Schema({vol.Required("action"): vol.In(action_options)})
 
         return self.async_show_form(
             step_id="validate_connection",
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
-                "discovery_url": self._discovery_url,
-                "client_id": self._client_id,
-                "provider_name": OIDC_PROVIDERS[self._provider]["name"]
-            }
+                "discovery_url": self._flow_state.discovery_url,
+                "client_id": self._client_config.client_id,
+                "provider_name": OIDC_PROVIDERS[self._flow_state.provider]["name"],
+            },
         )
 
     async def async_step_groups_config(
@@ -408,26 +459,30 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            self._enable_groups = user_input.get(CONF_ENABLE_GROUPS, False)
-            if self._enable_groups:
-                self._admin_group = user_input.get(CONF_ADMIN_GROUP, "admins")
-                self._user_group = user_input.get(CONF_USER_GROUP)
-            
+            self._feature_config.enable_groups = user_input.get(
+                CONF_ENABLE_GROUPS, False
+            )
+            if self._feature_config.enable_groups:
+                self._feature_config.admin_group = user_input.get(
+                    CONF_ADMIN_GROUP, "admins"
+                )
+                self._feature_config.user_group = user_input.get(CONF_USER_GROUP)
+
             return await self.async_step_user_linking()
 
-        provider_config = OIDC_PROVIDERS[self._provider]
+        provider_config = OIDC_PROVIDERS[self._flow_state.provider]
         default_admin_group = provider_config.get("default_admin_group", "admins")
-        
-        data_schema_dict = {
-            vol.Optional(CONF_ENABLE_GROUPS, default=True): bool
-        }
-        
+
+        data_schema_dict = {vol.Optional(CONF_ENABLE_GROUPS, default=True): bool}
+
         # Add group configuration fields if groups are enabled
         if user_input is None or user_input.get(CONF_ENABLE_GROUPS, True):
-            data_schema_dict.update({
-                vol.Optional(CONF_ADMIN_GROUP, default=default_admin_group): str,
-                vol.Optional(CONF_USER_GROUP): str
-            })
+            data_schema_dict.update(
+                {
+                    vol.Optional(CONF_ADMIN_GROUP, default=default_admin_group): str,
+                    vol.Optional(CONF_USER_GROUP): str,
+                }
+            )
 
         data_schema = vol.Schema(data_schema_dict)
 
@@ -436,8 +491,8 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors,
             description_placeholders={
-                "provider_name": OIDC_PROVIDERS[self._provider]["name"]
-            }
+                "provider_name": OIDC_PROVIDERS[self._flow_state.provider]["name"]
+            },
         )
 
     async def async_step_user_linking(
@@ -447,82 +502,55 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            self._enable_user_linking = user_input.get(CONF_ENABLE_USER_LINKING, False)
+            self._feature_config.enable_user_linking = user_input.get(
+                CONF_ENABLE_USER_LINKING, False
+            )
             return await self.async_step_test_auth()
 
-        data_schema = vol.Schema({
-            vol.Optional(CONF_ENABLE_USER_LINKING, default=False): bool
-        })
+        data_schema = vol.Schema(
+            {vol.Optional(CONF_ENABLE_USER_LINKING, default=False): bool}
+        )
 
         return self.async_show_form(
             step_id="user_linking",
             data_schema=data_schema,
             errors=errors,
-            description_placeholders={}
+            description_placeholders={},
         )
 
     async def async_step_test_auth(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Test authentication flow."""
+        """Test authentication flow with combined instructions."""
         if user_input is not None:
-            if user_input.get("skip_test", False):
-                return await self.async_step_finalize()
-            else:
-                # Show manual OAuth test instructions
-                return await self.async_step_manual_oauth_test()
-
-        data_schema = vol.Schema({
-            vol.Optional("skip_test", default=False): bool
-        })
-
-        return self.async_show_form(
-            step_id="test_auth",
-            data_schema=data_schema,
-            description_placeholders={
-                "provider_name": OIDC_PROVIDERS[self._provider]["name"]
-            }
-        )
-
-    async def async_step_manual_oauth_test(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Show manual OAuth test instructions to user."""
-        if user_input is not None:
-            # User has completed or skipped the manual test
+            # User has chosen to continue or skip
             return await self.async_step_finalize()
 
-        # Generate the OAuth test URL for manual testing
+        # Generate the OAuth test URL for display
         auth_url = await self._generate_oauth_test_url()
-        
-        if not auth_url:
-            # If we can't generate URL, skip to finalize
-            return await self.async_step_finalize()
 
-        data_schema = vol.Schema({
-            vol.Optional("test_completed", default=True): bool
-        })
-
-        # Get the same base URL used in the auth URL generation for consistency
+        # Get redirect URI for display
         try:
             base_url = network.get_url(
-                self.hass, 
+                self.hass,
                 prefer_external=True,
                 allow_internal=True,
-                allow_external=True
+                allow_external=True,
             )
             redirect_uri = f"{base_url}/auth/oidc/callback"
         except network.NoURLAvailableError:
             redirect_uri = "Unable to determine redirect URI"
 
+        data_schema = vol.Schema({vol.Optional("test_completed", default=True): bool})
+
         return self.async_show_form(
-            step_id="manual_oauth_test",
+            step_id="test_auth",
             data_schema=data_schema,
             description_placeholders={
-                "provider_name": OIDC_PROVIDERS[self._provider]["name"],
-                "auth_url": auth_url,
-                "redirect_uri": redirect_uri
-            }
+                "provider_name": OIDC_PROVIDERS[self._flow_state.provider]["name"],
+                "auth_url": auth_url or "Unable to generate test URL",
+                "redirect_uri": redirect_uri,
+            },
         )
 
     async def _generate_oauth_test_url(self) -> str | None:
@@ -530,33 +558,35 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             # Generate a state parameter for this flow
             self._oauth_state = secrets.token_urlsafe(32)
-            
+
             # Get Home Assistant base URL using the proper network helper
             # Prefer external URLs (FQDN) over internal IPs for OAuth redirects
             try:
                 base_url = network.get_url(
-                    self.hass, 
+                    self.hass,
                     prefer_external=True,
                     allow_internal=True,
-                    allow_external=True
+                    allow_external=True,
                 )
             except network.NoURLAvailableError:
-                _LOGGER.warning("Unable to determine Home Assistant URL for OAuth redirect")
+                _LOGGER.warning(
+                    "Unable to determine Home Assistant URL for OAuth redirect"
+                )
                 return None
-            
+
             # Construct redirect URI using the OIDC integration's callback path
             redirect_uri = f"{base_url}/auth/oidc/callback"
-            
+
             # Get authorization URL from OIDC client
             auth_url = await self._oidc_client.async_get_authorization_url(redirect_uri)
-            
+
             if auth_url:
                 _LOGGER.debug("Generated OAuth test URL for provider validation")
             else:
                 _LOGGER.warning("Failed to generate OAuth authorization URL")
-            
+
             return auth_url
-            
+
         except (aiohttp.ClientError, ValueError, KeyError) as e:
             _LOGGER.error("Error generating OAuth test URL: %s", str(e))
             return None
@@ -564,33 +594,30 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected error generating OAuth test URL: %s", str(e))
             return None
 
-
-    async def async_step_finalize(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_finalize(self) -> FlowResult:
         """Finalize the configuration and create the config entry."""
-        await self.async_set_unique_id(f"{DOMAIN}_{self._discovery_url}")
+        await self.async_set_unique_id(f"{DOMAIN}_{self._flow_state.discovery_url}")
         self._abort_if_unique_id_configured()
 
-        provider_config = OIDC_PROVIDERS[self._provider]
-        
+        provider_config = OIDC_PROVIDERS[self._flow_state.provider]
+
         # Build the configuration
         config_data = {
-            "provider": self._provider,
-            "client_id": self._client_id,
-            "discovery_url": self._discovery_url,
-            "display_name": f"{provider_config['name']} (OIDC)"
+            "provider": self._flow_state.provider,
+            "client_id": self._client_config.client_id,
+            "discovery_url": self._flow_state.discovery_url,
+            "display_name": f"{provider_config['name']} (OIDC)",
         }
 
         # Add optional fields
-        if self._is_confidential and self._client_secret:
-            config_data["client_secret"] = self._client_secret
+        if self._client_config.is_confidential and self._client_config.client_secret:
+            config_data["client_secret"] = self._client_config.client_secret
 
         # Configure features
         features = {
-            "automatic_user_linking": self._enable_user_linking,
+            "automatic_user_linking": self._feature_config.enable_user_linking,
             "automatic_person_creation": True,
-            "include_groups_scope": self._enable_groups
+            "include_groups_scope": self._feature_config.enable_groups,
         }
         config_data["features"] = features
 
@@ -599,20 +626,17 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_data["claims"] = claims
 
         # Configure roles if groups are enabled
-        if self._enable_groups:
+        if self._feature_config.enable_groups:
             roles = {}
-            if self._admin_group:
-                roles["admin"] = self._admin_group
-            if self._user_group:
-                roles["user"] = self._user_group
+            if self._feature_config.admin_group:
+                roles["admin"] = self._feature_config.admin_group
+            if self._feature_config.user_group:
+                roles["user"] = self._feature_config.user_group
             config_data["roles"] = roles
 
         title = f"{provider_config['name']} OIDC"
-        
-        return self.async_create_entry(
-            title=title,
-            data=config_data
-        )
+
+        return self.async_create_entry(title=title, data=config_data)
 
     @staticmethod
     @callback
@@ -636,14 +660,14 @@ class OIDCOptionsFlowHandler(config_entries.OptionsFlow):
                 "automatic_user_linking": user_input.get("enable_user_linking", False),
                 "include_groups_scope": user_input.get("enable_groups", False),
             }
-            
+
             updated_roles = {}
             if user_input.get("enable_groups", False):
                 if user_input.get("admin_group"):
                     updated_roles["admin"] = user_input["admin_group"]
                 if user_input.get("user_group"):
                     updated_roles["user"] = user_input["user_group"]
-            
+
             # Update the config entry data
             new_data = self.config_entry.data.copy()
             new_data["features"] = {**new_data.get("features", {}), **updated_features}
@@ -653,50 +677,61 @@ class OIDCOptionsFlowHandler(config_entries.OptionsFlow):
                 # Remove roles if groups are disabled
                 if not user_input.get("enable_groups", False):
                     del new_data["roles"]
-            
+
             # Update the config entry
-            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-            
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+
             return self.async_create_entry(title="", data={})
 
         current_config = self.config_entry.data
         current_features = current_config.get("features", {})
         current_roles = current_config.get("roles", {})
-        
+
         # Determine if this provider supports groups
         provider = current_config.get("provider", "generic")
-        provider_supports_groups = OIDC_PROVIDERS.get(provider, {}).get("supports_groups", True)
-        
+        provider_supports_groups = OIDC_PROVIDERS.get(provider, {}).get(
+            "supports_groups", True
+        )
+
         # Build schema based on provider capabilities
         schema_dict = {
             vol.Optional(
                 "enable_user_linking",
-                default=current_features.get("automatic_user_linking", False)
+                default=current_features.get("automatic_user_linking", False),
             ): bool
         }
-        
+
         # Add groups options if provider supports them
         if provider_supports_groups:
             enable_groups_default = current_features.get("include_groups_scope", False)
-            schema_dict[vol.Optional("enable_groups", default=enable_groups_default)] = bool
-            
+            schema_dict[
+                vol.Optional("enable_groups", default=enable_groups_default)
+            ] = bool
+
             # Add group name fields if groups are currently enabled or being enabled
-            if enable_groups_default or (user_input and user_input.get("enable_groups", False)):
-                schema_dict.update({
-                    vol.Optional(
-                        "admin_group", 
-                        default=current_roles.get("admin", DEFAULT_ADMIN_GROUP)
-                    ): str,
-                    vol.Optional(
-                        "user_group",
-                        default=current_roles.get("user", "")
-                    ): str
-                })
-        
+            if enable_groups_default or (
+                user_input and user_input.get("enable_groups", False)
+            ):
+                schema_dict.update(
+                    {
+                        vol.Optional(
+                            "admin_group",
+                            default=current_roles.get("admin", DEFAULT_ADMIN_GROUP),
+                        ): str,
+                        vol.Optional(
+                            "user_group", default=current_roles.get("user", "")
+                        ): str,
+                    }
+                )
+
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(schema_dict),
             description_placeholders={
-                "provider_name": OIDC_PROVIDERS.get(provider, {}).get("name", provider.title())
-            }
+                "provider_name": OIDC_PROVIDERS.get(provider, {}).get(
+                    "name", provider.title()
+                )
+            },
         )

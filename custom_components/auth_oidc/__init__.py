@@ -44,15 +44,17 @@ async def async_setup(hass: HomeAssistant, config):
     """Add the OIDC Auth Provider to the providers in Home Assistant (YAML config)."""
     if DOMAIN not in config:
         return True
-    
+
     my_config = config[DOMAIN]
-    
+
     # Store YAML config for later access by config flow
     if DOMAIN not in hass.data:
         hass.data[DOMAIN] = {}
     hass.data[DOMAIN]["yaml_config"] = my_config
-    
-    await _setup_oidc_provider(hass, my_config, config[DOMAIN].get(DISPLAY_NAME, DEFAULT_TITLE))
+
+    await _setup_oidc_provider(
+        hass, my_config, config[DOMAIN].get(DISPLAY_NAME, DEFAULT_TITLE)
+    )
     return True
 
 
@@ -60,18 +62,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up OIDC Authentication from a config entry."""
     # Convert config entry data to the format expected by the existing setup
     config_data = entry.data.copy()
-    
+
     # Convert config entry format to internal format
     my_config = _convert_config_entry_to_internal_format(config_data)
-    
+
     # Get display name from config entry
     display_name = config_data.get("display_name", DEFAULT_TITLE)
-    
+
     await _setup_oidc_provider(hass, my_config, display_name)
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_unload_entry(_hass: HomeAssistant, _entry: ConfigEntry):
     """Unload a config entry."""
     # OIDC auth providers cannot be easily unloaded as they are integrated
     # into Home Assistant's auth system. A restart is required.
@@ -81,30 +83,30 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
 def _convert_config_entry_to_internal_format(config_data: dict) -> dict:
     """Convert config entry data to internal configuration format."""
     my_config = {}
-    
+
     # Required fields
     my_config[CLIENT_ID] = config_data["client_id"]
     my_config[DISCOVERY_URL] = config_data["discovery_url"]
-    
+
     # Optional fields
     if "client_secret" in config_data:
         my_config[CLIENT_SECRET] = config_data["client_secret"]
-    
+
     if "display_name" in config_data:
         my_config[DISPLAY_NAME] = config_data["display_name"]
-    
+
     # Features configuration
     if "features" in config_data:
         my_config[FEATURES] = config_data["features"]
-    
+
     # Claims configuration
     if "claims" in config_data:
         my_config[CLAIMS] = config_data["claims"]
-    
+
     # Roles configuration
     if "roles" in config_data:
         my_config[ROLES] = config_data["roles"]
-    
+
     return my_config
 
 

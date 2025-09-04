@@ -55,14 +55,7 @@
       },
       "test_auth": {
         "title": "Test Authentication",
-        "description": "Test your OIDC configuration by performing a manual login test.\n\nThis will generate a test authorization URL that you can visit to verify your configuration works correctly.\n\n**Note:** You can skip this test and configure authentication later if preferred.",
-        "data": {
-          "skip_test": "Skip authentication test"
-        }
-      },
-      "manual_oauth_test": {
-        "title": "Manual OAuth Test",
-        "description": "**Test your {provider_name} OIDC configuration manually:**\n\n1. **Copy the authorization URL below and open it in a new browser tab:**\n   ```\n   {auth_url}\n   ```\n\n2. **You should be redirected to {provider_name} to log in**\n\n3. **After successful login, you should be redirected back to:**\n   ```\n   {redirect_uri}\n   ```\n\n4. **Expected results:**\n   - ✅ **Success:** You see a Home Assistant callback page or error about invalid flow\n   - ❌ **Failure:** You get authentication errors or can't log in\n\n**Note:** It's normal to see \"Invalid flow\" or similar error at the redirect URL - this just means the OAuth flow itself is working correctly.\n\n**If the test fails, check:**\n- Your {provider_name} application redirect URI settings\n- Client ID and secret (if using confidential client)\n- Network connectivity to {provider_name}",
+        "description": "**Test your {provider_name} OIDC configuration manually:**\n\n1. **Copy the authorization URL below and open it in a new browser tab:**\n   ```\n   {auth_url}\n   ```\n\n2. **You should be redirected to {provider_name} to log in**\n\n3. **After successful login, you should be redirected back to:**\n   ```\n   {redirect_uri}\n   ```\n\n4. **Expected results:**\n   - ✅ **Success:** You see a Home Assistant callback page or error about invalid flow\n   - ❌ **Failure:** You get authentication errors or can't log in\n\n**Note:** It's normal to see \"Invalid flow\" or similar error at the redirect URL - this just means the OAuth flow itself is working correctly.\n\n**If the test fails, check:**\n- Your {provider_name} application redirect URI settings\n- Client ID and secret (if using confidential client)\n- Network connectivity to {provider_name}\n\n**You can skip this test if you prefer to test authentication later.**",
         "data": {
           "test_completed": "I've completed the test (or want to skip)"
         }
