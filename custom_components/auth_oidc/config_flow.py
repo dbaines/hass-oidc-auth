@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import secrets
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -14,7 +13,6 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import network
 
 from .config import DOMAIN
 from .oidc_client import OIDCClient, OIDCDiscoveryInvalid, OIDCJWKSInvalid
@@ -493,7 +491,7 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._feature_config.enable_user_linking = user_input.get(
                 CONF_ENABLE_USER_LINKING, False
             )
-            return await self.async_step_test_auth()
+            return await self.async_step_finalize()
 
         data_schema = vol.Schema(
             {vol.Optional(CONF_ENABLE_USER_LINKING, default=False): bool}
@@ -505,82 +503,6 @@ class OIDCConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={},
         )
-
-    async def async_step_test_auth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Test authentication flow with combined instructions."""
-        if user_input is not None:
-            # User has chosen to continue or skip
-            return await self.async_step_finalize()
-
-        # Generate the OAuth test URL for display
-        auth_url = await self._generate_oauth_test_url()
-
-        # Get redirect URI for display
-        try:
-            base_url = network.get_url(
-                self.hass,
-                prefer_external=True,
-                allow_internal=True,
-                allow_external=True,
-            )
-            redirect_uri = f"{base_url}/auth/oidc/callback"
-        except network.NoURLAvailableError:
-            redirect_uri = "Unable to determine redirect URI"
-
-        data_schema = vol.Schema({vol.Optional("test_completed", default=True): bool})
-
-        return self.async_show_form(
-            step_id="test_auth",
-            data_schema=data_schema,
-            description_placeholders={
-                "provider_name": OIDC_PROVIDERS[self._flow_state.provider]["name"],
-                "auth_url": auth_url or "Unable to generate test URL",
-                "redirect_uri": redirect_uri,
-            },
-        )
-
-    async def _generate_oauth_test_url(self) -> str | None:
-        """Generate OAuth test URL for manual testing."""
-        try:
-            # Generate a state parameter for this flow
-            self._oauth_state = secrets.token_urlsafe(32)
-
-            # Get Home Assistant base URL using the proper network helper
-            # Prefer external URLs (FQDN) over internal IPs for OAuth redirects
-            try:
-                base_url = network.get_url(
-                    self.hass,
-                    prefer_external=True,
-                    allow_internal=True,
-                    allow_external=True,
-                )
-            except network.NoURLAvailableError:
-                _LOGGER.warning(
-                    "Unable to determine Home Assistant URL for OAuth redirect"
-                )
-                return None
-
-            # Construct redirect URI using the OIDC integration's callback path
-            redirect_uri = f"{base_url}/auth/oidc/callback"
-
-            # Get authorization URL from OIDC client
-            auth_url = await self._oidc_client.async_get_authorization_url(redirect_uri)
-
-            if auth_url:
-                _LOGGER.debug("Generated OAuth test URL for provider validation")
-            else:
-                _LOGGER.warning("Failed to generate OAuth authorization URL")
-
-            return auth_url
-
-        except (aiohttp.ClientError, ValueError, KeyError) as e:
-            _LOGGER.error("Error generating OAuth test URL: %s", str(e))
-            return None
-        except Exception as e:  # pylint: disable=broad-except
-            _LOGGER.exception("Unexpected error generating OAuth test URL: %s", str(e))
-            return None
 
     async def async_step_finalize(self) -> FlowResult:
         """Finalize the configuration and create the config entry."""

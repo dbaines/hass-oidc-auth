@@ -53,13 +53,6 @@
           "enable_user_linking": "Enable automatic user linking (⚠️ Security Risk)"
         }
       },
-      "test_auth": {
-        "title": "Test Authentication",
-        "description": "**Test your {provider_name} OIDC configuration manually:**\n\n1. **Copy the authorization URL below and open it in a new browser tab:**\n   ```\n   {auth_url}\n   ```\n\n2. **You should be redirected to {provider_name} to log in**\n\n3. **After successful login, you should be redirected back to:**\n   ```\n   {redirect_uri}\n   ```\n\n4. **Expected results:**\n   - ✅ **Success:** You see a Home Assistant callback page or error about invalid flow\n   - ❌ **Failure:** You get authentication errors or can't log in\n\n**Note:** It's normal to see \"Invalid flow\" or similar error at the redirect URL - this just means the OAuth flow itself is working correctly.\n\n**If the test fails, check:**\n- Your {provider_name} application redirect URI settings\n- Client ID and secret (if using confidential client)\n- Network connectivity to {provider_name}\n\n**You can skip this test if you prefer to test authentication later.**",
-        "data": {
-          "test_completed": "I've completed the test (or want to skip)"
-        }
-      },
       "finalize": {
         "title": "Setup Complete",
         "description": "Your OIDC authentication is now configured and ready to use.\n\n**Next Steps:**\n1. Save this configuration\n2. Restart Home Assistant if prompted\n3. The OIDC login option will appear on your login screen\n\n**Advanced Configuration:**\nAdvanced options like custom networking settings, specific claim configurations, or custom scopes are only available through YAML configuration. See the documentation for details.",
@@ -79,6 +72,7 @@
       "cannot_connect": "Failed to connect to the OIDC provider. Please check your network connection and discovery URL.",
       "discovery_invalid": "The discovery document could not be retrieved or is invalid. Please verify the discovery URL is correct.",
       "jwks_invalid": "Failed to retrieve or validate the JWKS (JSON Web Key Set). Please check your provider configuration.",
+      "invalid_client_credentials": "The client ID or client secret appears to be invalid. Please check your OIDC application settings and ensure the credentials are correct.",
       "client_secret_required": "Client secret is required when using confidential client mode.",
       "invalid_url_format": "The discovery URL must be a valid HTTP or HTTPS URL.",
       "invalid_client_id": "Client ID cannot be empty and must contain valid characters.",
