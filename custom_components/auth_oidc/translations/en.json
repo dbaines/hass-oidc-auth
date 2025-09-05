@@ -90,6 +90,7 @@
       "already_configured": "This OIDC provider is already configured.",
       "cannot_connect": "Unable to connect to the OIDC provider.",
       "invalid_discovery": "Invalid discovery document received from the provider.",
+      "reconfigure_successful": "OIDC Authentication has been successfully reconfigured with the updated client credentials.",
       "single_instance_allowed": "OIDC Authentication only supports a single configuration. You already have OIDC configured (either through YAML or the UI). To modify your existing configuration, go to Settings > Devices & Services > OIDC Authentication and click 'Configure'. To replace your configuration, first remove the existing one."
     }
   },
